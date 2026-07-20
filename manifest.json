@@ -1,0 +1,18 @@
+{
+  "name": "전력설비 점검공사 현장관리",
+  "short_name": "점검관리",
+  "description": "전력설비 점검공사 현장 데이터 입력, 점검표 작성, 사진대장 관리 앱",
+  "start_url": "./inspection-app.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#14171b",
+  "theme_color": "#14171b",
+  "lang": "ko",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-192-maskable.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
