@@ -698,7 +698,7 @@ function sanitizeForPath(s){
 function computePhotoFolder(){
   if(sites.length===0){ photoFolderPath = '지중저압설비점검'; return; }
   const first = sites.find(s=> String(s.no)==='1') || sites[0];
-  photoFolderPath = `지중저압설비점검/${sanitizeForPath(first.office)}/${sanitizeForPath(first.typeLabel)}`;
+  photoFolderPath = `지중저압설비점검/${sanitizeForPath(first.office)} ${sanitizeForPath(first.typeLabel)}`;
 }
 
 // ---- 영속 저장(IndexedDB): 앱을 종료했다 다시 열어도 입력한 자료가 유지되도록 ----
@@ -1954,14 +1954,9 @@ async function exportChecklistPDF(siteKey){
 
   try{
     const blob = await generateChecklistPDFBlob(site);
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${site.fixedChar}${site.code}_점검표.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    const saved = await saveOrDownload(`${site.fixedChar}${site.code}_점검표.pdf`, blob, REPORT_FOLDER);
     statusEl.className = 'status-line success';
-    statusEl.textContent = 'PDF가 생성되었습니다.';
+    statusEl.textContent = saved ? 'PDF가 폴더에 저장되었습니다.' : 'PDF가 생성되었습니다.';
   }catch(err){
     statusEl.className = 'status-line error';
     statusEl.textContent = 'PDF 생성 실패: ' + (err && err.message ? err.message : err);
@@ -2005,6 +2000,52 @@ function resizeImage(file, maxW, maxH, quality){
   });
 }
 
+function blobToBase64(blob){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onloadend = ()=> resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Capacitor 네이티브 앱(APK)에서 실행 중이면 진짜 폴더를 만들어 저장하고,
+// 웹/PWA(브라우저)에서 실행 중이면 false를 반환해서 기존 다운로드 방식으로 대체합니다.
+async function saveFileNativeIfAvailable(filename, blob, folderPath){
+  const cap = window.Capacitor;
+  if(!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return false;
+  const FS = cap.Plugins && cap.Plugins.Filesystem;
+  if(!FS) return false;
+  try{
+    const base64 = await blobToBase64(blob);
+    await FS.writeFile({
+      path: `${folderPath}/${filename}`,
+      data: base64,
+      directory: cap.Directory ? cap.Directory.Documents : 'DOCUMENTS',
+      recursive: true,
+    });
+    return true;
+  }catch(e){
+    console.error('네이티브 폴더 저장 실패, 다운로드 방식으로 대체:', e);
+    return false;
+  }
+}
+
+const REPORT_FOLDER = '지중저압설비점검/보고서';
+
+// 사진과 동일한 원리: Capacitor 네이티브 앱이면 폴더에 실제 저장, 웹/PWA면 기존 다운로드로 대체
+async function saveOrDownload(filename, blob, folderPath){
+  const saved = await saveFileNativeIfAvailable(filename, blob, folderPath || REPORT_FOLDER);
+  if(saved) return true;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  return false;
+}
+
 async function handleCapture(evt){
   const file = evt.target.files[0];
   evt.target.value = '';
@@ -2018,13 +2059,18 @@ async function handleCapture(evt){
     it.url = URL.createObjectURL(renamed);
     renderDetail(site);
     saveStateNow();
-    // 사진 자동 저장: 파일명은 고정문자+전산화번호_순번 형식만 사용 (폴더 경로를 파일명에 섞지 않음)
-    const a = document.createElement('a');
-    a.href = it.url;
-    a.download = renamed.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+
+    // 파일명은 항상 고정문자+전산화번호_순번 형식만 사용 (폴더 경로를 파일명에 섞지 않음)
+    const savedNative = await saveFileNativeIfAvailable(renamed.name, renamed, photoFolderPath);
+    if(!savedNative){
+      // 웹/PWA 환경: 기존 방식대로 다운로드
+      const a = document.createElement('a');
+      a.href = it.url;
+      a.download = renamed.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
   }catch(err){
     alert('사진 처리 중 문제가 발생했습니다: ' + err.message);
   }
@@ -2162,7 +2208,7 @@ function applySheetStyle(XL, ws, headerRowCount){
   }
 }
 
-function downloadExcelReport(){
+async function downloadExcelReport(){
   const targets = sites.filter(hasChecklistData).sort((a,b)=> (Number(a.no)||0) - (Number(b.no)||0));
   if(targets.length===0) return;
 
@@ -2204,7 +2250,9 @@ function downloadExcelReport(){
   const dateStr = todayStr().replace(/-/g,'');
   const firstSite = sites.find(s=>String(s.no)==='1') || sites[0];
   const gubunForFilename = firstSite ? firstSite.typeLabel : '설비';
-  XL.writeFile(wb, `${gubunForFilename}_점검결과_${dateStr}.xlsx`);
+  const wbout = XL.write(wb, {bookType:'xlsx', type:'array'});
+  const blob = new Blob([wbout], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  await saveOrDownload(`${gubunForFilename}_점검결과_${dateStr}.xlsx`, blob, REPORT_FOLDER);
 }
 
 function buildExcelRowDataFallback(site){
@@ -2254,12 +2302,7 @@ async function downloadAllChecklistPDFs(){
       }
     }
     const zipBlob = await zip.generateAsync({type:'blob'});
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(zipBlob);
-    a.download = '점검표_전체.zip';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    await saveOrDownload('점검표_전체.zip', zipBlob, REPORT_FOLDER);
   }catch(err){
     infoEl.textContent = 'PDF 일괄 생성 실패: ' + (err && err.message ? err.message : err);
   }finally{
