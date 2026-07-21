@@ -1,6 +1,6 @@
 // 캐시 이름을 올릴 때마다(파일을 새로 배포할 때마다) 바꿔주면 예전 캐시가 자동 정리됩니다.
-const CACHE_NAME = 'inspection-app-v2';
-const ASSETS = ['./inspection-app.html', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE_NAME = 'inspection-app-v3';
+const ASSETS = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
