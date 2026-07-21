@@ -606,6 +606,7 @@
         <div class="topbar-sub" id="topbarSub"></div>
       </div>
       <button class="back-btn" id="resetBtn" style="display:none;" onclick="confirmGoUpload()" title="새 파일 업로드">⇪</button>
+      <button class="back-btn" id="clearBtn" style="display:none;" onclick="confirmResetAll()" title="전체 초기화">🗑</button>
     </div>
   </header>
 
@@ -657,8 +658,8 @@
   <div class="bottom-bar" id="bottomBar" style="display:none;">
     <div class="bottom-bar-grid">
       <div class="bottom-bar-col">
-        <div class="bottom-bar-info" id="bottomBarInfo">0 / 0 촬영완료</div>
-        <button class="btn btn-secondary btn-compact" id="zipBtn" onclick="downloadZip()">사진 ZIP 다운로드</button>
+        <div class="bottom-bar-info" id="excelBarInfo">0건 작성됨</div>
+        <button class="btn btn-secondary btn-compact" id="excelBtn" onclick="downloadExcelReport()">점검결과 엑셀 다운로드</button>
       </div>
       <div class="bottom-bar-col">
         <div class="bottom-bar-info" id="pdfBarInfo">0건 작성됨</div>
@@ -687,12 +688,102 @@
 let sites = [];          // [{key, fixedChar, typeLabel, code, items:[{seq,item,filename,file,url,result}]}]
 let currentSiteKey = null;
 let currentSlotFilename = null;
+let photoFolderPath = '지중저압설비점검'; // 사진 자동저장 폴더 경로(사업소명/구분은 순번1번 기준)
+
+function sanitizeForPath(s){
+  return String(s||'').replace(/[\\\/:*?"<>|]/g,'').trim() || '미지정';
+}
+function computePhotoFolder(){
+  if(sites.length===0){ photoFolderPath = '지중저압설비점검'; return; }
+  const first = sites.find(s=> String(s.no)==='1') || sites[0];
+  photoFolderPath = `지중저압설비점검/${sanitizeForPath(first.office)}/${sanitizeForPath(first.typeLabel)}`;
+}
+
+// ---- 영속 저장(IndexedDB): 앱을 종료했다 다시 열어도 입력한 자료가 유지되도록 ----
+const IDB_NAME = 'inspectionAppDB';
+const IDB_STORE = 'appState';
+let __saveTimer = null;
+
+function idbOpen(){
+  return new Promise((resolve, reject)=>{
+    if(!('indexedDB' in window)){ reject(new Error('indexedDB 미지원')); return; }
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = (e)=>{
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess = ()=> resolve(req.result);
+    req.onerror = ()=> reject(req.error);
+  });
+}
+
+async function saveStateNow(){
+  try{
+    const db = await idbOpen();
+    // blob URL(url)은 재실행 시 새로 만들어야 하므로 저장하지 않음(file은 그대로 저장 가능)
+    const serializable = sites.map(site=>({
+      ...site,
+      items: site.items.map(it=>{
+        const {url, ...rest} = it;
+        return rest;
+      })
+    }));
+    await new Promise((resolve, reject)=>{
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(serializable, 'sites');
+      tx.oncomplete = resolve;
+      tx.onerror = ()=> reject(tx.error);
+    });
+  }catch(e){ console.error('자동 저장 실패', e); }
+}
+
+// 너무 잦은 저장을 막기 위한 디바운스(짧은 시간 내 연속 입력은 마지막 것만 저장)
+function scheduleSave(){
+  clearTimeout(__saveTimer);
+  __saveTimer = setTimeout(saveStateNow, 400);
+}
+
+async function loadSavedState(){
+  try{
+    const db = await idbOpen();
+    return await new Promise((resolve, reject)=>{
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get('sites');
+      req.onsuccess = ()=> resolve(req.result || null);
+      req.onerror = ()=> reject(req.error);
+    });
+  }catch(e){ console.error('저장된 자료 불러오기 실패', e); return null; }
+}
+
+async function clearSavedState(){
+  try{
+    const db = await idbOpen();
+    await new Promise((resolve, reject)=>{
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).delete('sites');
+      tx.oncomplete = resolve;
+      tx.onerror = ()=> reject(tx.error);
+    });
+  }catch(e){ console.error('초기화 실패', e); }
+}
+
+function confirmResetAll(){
+  showConfirm('저장된 모든 점검 자료(리스트·점검표·사진)를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다.', async ()=>{
+    sites = [];
+    await clearSavedState();
+    setTopbar('현장 점검 자료 관리', '', false, false);
+    showScreen('screen-upload');
+    const statusEl = document.getElementById('uploadStatus');
+    if(statusEl){ statusEl.className='status-line'; statusEl.textContent=''; }
+  });
+}
 
 function setTopbar(title, sub, showBack, showReset){
   document.getElementById('topbarTitle').textContent = title;
   document.getElementById('topbarSub').textContent = sub || '';
   document.getElementById('backBtn').style.display = showBack ? 'flex' : 'none';
   document.getElementById('resetBtn').style.display = showReset ? 'flex' : 'none';
+  document.getElementById('clearBtn').style.display = showReset ? 'flex' : 'none';
 }
 
 let modalAction = null;
@@ -743,6 +834,8 @@ function handleFile(evt){
       sites = parsed;
       statusEl.className = 'status-line success';
       statusEl.textContent = `완료 — 항목 ${sites.length}건 불러옴`;
+      computePhotoFolder();
+      saveStateNow();
       setTimeout(()=>{ renderList(); showScreen('screen-list'); setTopbar('순번 리스트', `${sites.length}건`, false, true); }, 300);
     }catch(err){
       statusEl.className = 'status-line error';
@@ -1475,6 +1568,7 @@ function updateManualSelect(siteKey, key, val){
   }
   renderDetail(site);
   switchTab('check');
+  scheduleSave();
 }
 function updateCascadeFirst(siteKey, key, val){
   const site = sites.find(s=>s.key===siteKey);
@@ -1482,15 +1576,18 @@ function updateCascadeFirst(siteKey, key, val){
   site.checklist.meta[key] = '';
   renderDetail(site);
   switchTab('check');
+  scheduleSave();
 }
 function updateCascadeSecond(siteKey, key, val){
   const site = sites.find(s=>s.key===siteKey);
   const phase = site.checklist.meta[key+'_phase'] || '';
   site.checklist.meta[key] = val ? (phase ? phase+' '+val : val) : '';
+  scheduleSave();
 }
 
 function updateMeta(siteKey, key, val){
   sites.find(s=>s.key===siteKey).checklist.meta[key] = val;
+  scheduleSave();
 }
 function updateJudge(siteKey, itemId, val){
   const site = sites.find(s=>s.key===siteKey);
@@ -1498,6 +1595,7 @@ function updateJudge(siteKey, itemId, val){
   cur.judge = cur.judge===val ? null : val;
   renderDetail(site);
   switchTab('check');
+  scheduleSave();
 }
 function findItemDef(typeLabel, itemId){
   const form = CHECKLIST_FORMS[typeLabel];
@@ -1524,9 +1622,11 @@ function updateMeasure(siteKey, itemId, val){
       el.className = 'auto-judge-badge ' + (v.judge==='부적합'?'no':v.judge==='적합'?'ok':'');
     }
   }
+  scheduleSave();
 }
 function updateNumber(siteKey, itemId, val){
   sites.find(s=>s.key===siteKey).checklist.values[itemId].number = val;
+  scheduleSave();
 }
 function updateMulti(siteKey, itemId, subKey, val){
   const site = sites.find(s=>s.key===siteKey);
@@ -1534,15 +1634,18 @@ function updateMulti(siteKey, itemId, subKey, val){
   if(isAutoJudgeItem(site.typeLabel, itemId)){
     refreshAutoBadges(site);
   }
+  scheduleSave();
 }
 function updateSpecial(siteKey, val){
   sites.find(s=>s.key===siteKey).checklist.특이사항 = val;
+  scheduleSave();
 }
 function updateOverall(siteKey, val){
   const site = sites.find(s=>s.key===siteKey);
   site.checklist.종합판정 = site.checklist.종합판정===val ? null : val;
   renderDetail(site);
   switchTab('check');
+  scheduleSave();
 }
 const PDF_PAGE_W = 595.32, PDF_PAGE_H = 841.92;
 const PDF_CANVAS_W = 794, PDF_CANVAS_H = Math.round(794 * PDF_PAGE_H / PDF_PAGE_W * 10) / 10;
@@ -1898,6 +2001,14 @@ async function handleCapture(evt){
     it.file = renamed;
     it.url = URL.createObjectURL(renamed);
     renderDetail(site);
+    saveStateNow();
+    // 폰 저장소에 폴더 구조로 자동 저장 (지중저압설비점검/사업소명/구분/파일명)
+    const a = document.createElement('a');
+    a.href = it.url;
+    a.download = `${photoFolderPath}/${renamed.name}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }catch(err){
     alert('사진 처리 중 문제가 발생했습니다: ' + err.message);
   }
@@ -1908,37 +2019,175 @@ function updateBottomBar(){
   const showing = document.getElementById('screen-list').classList.contains('active') ||
                    document.getElementById('screen-detail').classList.contains('active');
   if(!showing || sites.length===0){ bar.style.display='none'; return; }
-  let total=0, done=0;
-  sites.forEach(s=> s.items.forEach(i=>{ total++; if(i.file) done++; }));
-  document.getElementById('bottomBarInfo').textContent = `${done} / ${total} 촬영완료`;
-  document.getElementById('zipBtn').disabled = done===0;
 
   const filledCount = sites.filter(hasChecklistData).length;
+  document.getElementById('excelBarInfo').textContent = `${filledCount}건 작성됨`;
+  document.getElementById('excelBtn').disabled = filledCount===0;
   document.getElementById('pdfBarInfo').textContent = `점검표 ${filledCount}건 작성됨`;
   document.getElementById('pdfZipBtn').disabled = filledCount===0;
 
   bar.style.display='flex';
 }
 
-async function downloadZip(){
-  const zip = new JSZip();
-  let count=0;
-  sites.forEach(site=>{
-    site.items.forEach(it=>{
-      if(it.file){
-        zip.file(it.file.name, it.file);
-        count++;
-      }
-    });
+function consolidateJudge(...vals){
+  const list = vals.filter(v=>v);
+  if(list.includes('부적합')) return '부적합';
+  if(list.length && list.every(v=>v==='적합')) return '적합';
+  return '';
+}
+function photoFileList(site){
+  return site.items.filter(i=>i.file).map(i=>i.filename+'.jpg').join(', ');
+}
+function jv(cl, id){ return (cl.values[id]||{}).judge || ''; }
+function jm(cl, id){ return (cl.values[id]||{}).measureValue || ''; }
+function jn(cl, id){ return (cl.values[id]||{}).number || ''; }
+function jmulti(cl, id, key){ return (cl.values[id]||{})[key] || ''; }
+function jauto(cl, id){ return (cl.values[id]||{}).autoJudge || ''; }
+
+// 실제 엑셀일괄등록양식 파일들의 열 구조를 그대로 재현 (헤더 3행 + 데이터)
+const KEPCO_EXPORT_FORMS = {
+  '지상변압기': { headerRows: 3, dataStartRow: 8,
+    header: [
+      ["순번","사업소","사업소","사업소","사업소","설비구분","선로명","선로번호","설치위치","전산화번호","점검일자","규격","제조사","제조년월","점검자소속","점검자","점검순번","종합판정","첨부파일","외관","외함 및 기초대","본체","","","","","부하전류","","","","단자전압","","","편조선","","","접지","특이사항","HA-A","HA-B","HA-C","HB-A","HB-B","HB-C"],
+      ["","본부명","본부코드","사업소명","사업소코드","","","","","","","","","","","","","","","외함","기초대","절연유","","방압밸브","저압단자","절연커버","A상","B상","C상","N상","A상","B상","C상","누설전류","","시설상태","시설상태","","","","","","",""],
+      ["","","","","","","","","","","","","","","","","","","","","","상태","온도","","","","","","","","","","","측정","결과","","","","","","","","",""]
+    ],
+    columns: (site, cl)=>[
+      site.no, cl.meta.본부명||'', '', cl.meta.사업소명||'', '', site.typeLabel, site.lineName||'', site.lineNo||'',
+      cl.meta.설치위치||'', site.code||'', cl.meta.점검일자||'', cl.meta.규격||'', '', cl.meta.제조년월||'',
+      cl.meta.점검자소속||'', cl.meta.점검자||'', '', cl.종합판정||'', photoFileList(site),
+      jv(cl,'ext1'), jv(cl,'ext2'),
+      consolidateJudge(jv(cl,'body1'),jv(cl,'body2')), jn(cl,'body3'),
+      jv(cl,'body4'), jv(cl,'body5'), jv(cl,'body6'),
+      jmulti(cl,'load','a'), jmulti(cl,'load','b'), jmulti(cl,'load','c'), jmulti(cl,'load','n'),
+      jmulti(cl,'volt','a'), jmulti(cl,'volt','b'), jmulti(cl,'volt','c'),
+      jm(cl,'gnd3'), jv(cl,'gnd3'), jv(cl,'gnd1'), jv(cl,'gnd4'), cl.특이사항||'',
+      jmulti(cl,'ha','a'), jmulti(cl,'ha','b'), jmulti(cl,'ha','c'),
+      jmulti(cl,'hb','a'), jmulti(cl,'hb','b'), jmulti(cl,'hb','c'),
+    ]
+  },
+  '분전함': { headerRows: 3, dataStartRow: 8,
+    header: [
+      ["순번","사업소","","","","설비구분","선로명","선로번호","설치위치","전산화번호","점검일자","점검자소속","점검자","분전함종류","제조년월","점검순번","종합판정","첨부파일","외관","","","","내부","","","","","차단기 단자온도","","","","","","","","","","","","","","","","케이블","부하전류 측정","","","","","","","","","","","","","","","",""],
+      ["","본부명","본부코드","사업소명","사업소코드","","","","","","","","","","","","","","번호찰","외함 부식 및 파손","기초대 파손 및 이탈","지반침하","표시찰","충전부","접속부위","접지","기기접지  측정값","분기1","","","","분기2","","","","분기3","","","","분기4","","","","설치상태 및 충전부 상태","분기1","","","","분기2","","","","분기3","","","","분기4","","","",""],
+      ["","","","","","","","","","","","","","","","","","","","","","","","","","","","A","B","C","N","A","B","C","N","A","B","C","N","A","B","C","N","","A상","B상","C상","N상","A상","B상","C상","N상","A상","B상","C상","N상","A상","B상","C상","N상",""]
+    ],
+    columns: (site, cl)=>[
+      site.no, cl.meta.본부명||'', '', cl.meta.사업소명||'', '', site.typeLabel, site.lineName||'', site.lineNo||'',
+      cl.meta.설치위치||'', site.code||'', cl.meta.점검일자||'', cl.meta.점검자소속||'', cl.meta.점검자||'',
+      cl.meta.분전함종류||'', cl.meta.제조년월||'', '', cl.종합판정||'', photoFileList(site),
+      jv(cl,'ext1'), jv(cl,'ext2'), jv(cl,'ext3'), jv(cl,'ext3'),
+      jv(cl,'in1'), jv(cl,'in3'), jv(cl,'in4'), jv(cl,'gndp'), jm(cl,'gndp'),
+      jmulti(cl,'in5','a'),jmulti(cl,'in5','b'),jmulti(cl,'in5','c'),jmulti(cl,'in5','n'),
+      jmulti(cl,'in6','a'),jmulti(cl,'in6','b'),jmulti(cl,'in6','c'),jmulti(cl,'in6','n'),
+      jmulti(cl,'in7','a'),jmulti(cl,'in7','b'),jmulti(cl,'in7','c'),jmulti(cl,'in7','n'),
+      jmulti(cl,'in8','a'),jmulti(cl,'in8','b'),jmulti(cl,'in8','c'),jmulti(cl,'in8','n'),
+      jv(cl,'cabp1'),
+      jmulti(cl,'cabp2','a'),jmulti(cl,'cabp2','b'),jmulti(cl,'cabp2','c'),jmulti(cl,'cabp2','n'),
+      jmulti(cl,'cabp3','a'),jmulti(cl,'cabp3','b'),jmulti(cl,'cabp3','c'),jmulti(cl,'cabp3','n'),
+      jmulti(cl,'cabp4','a'),jmulti(cl,'cabp4','b'),jmulti(cl,'cabp4','c'),jmulti(cl,'cabp4','n'),
+      jmulti(cl,'cabp5','a'),jmulti(cl,'cabp5','b'),jmulti(cl,'cabp5','c'),jmulti(cl,'cabp5','n'),
+    ]
+  },
+  '입상점': { headerRows: 3, dataStartRow: 8,
+    header: [
+      ["순번","사업소","","","","설비구분","선로명","선로번호","위치","전산화번호","점검일자","점검자소속","점검자","점검순번","종합판정","첨부파일","외관","저압입상점","","","","","","","","","","","","","","",""],
+      ["","본부명","본부코드","사업소명","사업소코드","","","","","","","","","","","","번호찰","접속장치","고정볼트 온도(℃)","","","","","구출선 온도(℃)","","","","","케이블","입상관","접속장치 높이(m)","접지","접지저항 값 (Ω)"],
+      ["","","","","","","","","","","","","","","","","","","상태판정","A","B","C","N","상태판정","A","B","C","N","","","","",""]
+    ],
+    columns: (site, cl)=>[
+      site.no, cl.meta.본부명||'', '', cl.meta.사업소명||'', '', site.typeLabel, site.lineName||'', site.lineNo||'',
+      cl.meta.설치위치||'', site.code||'', cl.meta.점검일자||'', cl.meta.점검자소속||'', cl.meta.점검자||'', '', cl.종합판정||'', photoFileList(site),
+      jv(cl,'dev1'), consolidateJudge(jv(cl,'dev2'),jv(cl,'dev3'),jv(cl,'dev4')),
+      '', jmulti(cl,'dev5','a'), jmulti(cl,'dev5','b'), jmulti(cl,'dev5','c'), jmulti(cl,'dev5','n'),
+      '', jmulti(cl,'dev6','a'), jmulti(cl,'dev6','b'), jmulti(cl,'dev6','c'), jmulti(cl,'dev6','n'),
+      consolidateJudge(jv(cl,'cab1'),jv(cl,'cab2'),jv(cl,'cab3')), '',
+      jm(cl,'dev7'), jv(cl,'gnd1'), jm(cl,'gnd2'),
+    ]
+  },
+  '저압접속함': { headerRows: 3, dataStartRow: 7,
+    header: [
+      ["순번","사업소","","","","*선로명","*선로번호","*전산화 번호","소유구분","설치위치","뚜껑종류","점검내역","","외관","","","","접지","","절연상태","구조물","케이블","","접속재","","","접속재 대지전압(V)","","","","","","","","","","","","","","","","","","","","접속재 누설전류(㎃)","","","","","","","","","","","","","","","","","","","","",""],
+      ["","본부명","본부코드","사업소명","사업소코드","","","","","","","","","","","","","","","","","","","","","","접속재1 종류","접속재1 대지전압","","","","접속재2 종류","접속재2 대지전압","","","","접속재3 종류","접속재3 대지전압","","","","접속재4 종류","접속재4 대지전압","","","","접속재1 누설전류","","","","접속재2 누설전류","","","","접속재3 누설전류","","","","접속재4 누설전류","","","","","","","","",""],
+      ["","","","","","","","","","","","*점검일자","점검자","번호찰","단차","단차측정(㎜)","뚜껑","접지상태","접지저항측정(Ω)","","내부상태","케이블 외관점검","케이블 열화여부","접속재 외관점검","접속재 설치상태","접속재 열화여부","","A상","B상","C상","결과","","A상","B상","C상","결과","","A상","B상","C상","결과","","A상","B상","C상","결과","A상","B상","C상","결과","A상","B상","C상","결과","A상","B상","C상","결과","A상","B상","C상","결과","","","","","",""]
+    ],
+    columns: (site, cl)=>[
+      site.no, cl.meta.본부명||'', '', cl.meta.사업소명||'', '', site.lineName||'', site.lineNo||'', site.code||'',
+      '', cl.meta.설치위치||'', cl.meta.접속함뚜껑종류||'', cl.meta.점검일자||'', cl.meta.점검자||'',
+      jv(cl,'ext1'), jv(cl,'ext2'), jm(cl,'ext2'), jv(cl,'ext3'),
+      jv(cl,'ins3'), jm(cl,'ins3'), consolidateJudge(jv(cl,'ins1'),jv(cl,'ins2')), jv(cl,'jnt3'),
+      jv(cl,'cab1'), jv(cl,'cab2'), jv(cl,'jnt1'), '', jv(cl,'jnt2'),
+      '', jmulti(cl,'gv1','a'), jmulti(cl,'gv1','b'), jmulti(cl,'gv1','c'), jauto(cl,'gv1'),
+      '', jmulti(cl,'gv2','a'), jmulti(cl,'gv2','b'), jmulti(cl,'gv2','c'), jauto(cl,'gv2'),
+      '', jmulti(cl,'gv3','a'), jmulti(cl,'gv3','b'), jmulti(cl,'gv3','c'), jauto(cl,'gv3'),
+      '', '', '', '', '',
+      jmulti(cl,'leak1','a'), jmulti(cl,'leak1','b'), jmulti(cl,'leak1','c'), jauto(cl,'leak1'),
+      jmulti(cl,'leak2','a'), jmulti(cl,'leak2','b'), jmulti(cl,'leak2','c'), jauto(cl,'leak2'),
+      jmulti(cl,'leak3','a'), jmulti(cl,'leak3','b'), jmulti(cl,'leak3','c'), jauto(cl,'leak3'),
+      '', '', '', '', '', '', '', ''
+    ]
+  }
+};
+
+function downloadExcelReport(){
+  const targets = sites.filter(hasChecklistData).sort((a,b)=> (Number(a.no)||0) - (Number(b.no)||0));
+  if(targets.length===0) return;
+
+  const byType = {};
+  targets.forEach(site=>{
+    (byType[site.typeLabel] = byType[site.typeLabel] || []).push(site);
   });
-  if(count===0) return;
-  const blob = await zip.generateAsync({type:'blob'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = '사진대장.zip';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+
+  const wb = XLSX.utils.book_new();
+  Object.entries(byType).forEach(([typeLabel, group])=>{
+    const spec = KEPCO_EXPORT_FORMS[typeLabel];
+    let ws;
+    if(spec){
+      const colCount = spec.header[0].length;
+      const aoa = spec.header.map(r=>r.slice());
+      group.forEach(site=>{
+        const row = spec.columns(site, site.checklist);
+        while(row.length < colCount) row.push('');
+        aoa.push(row.slice(0, colCount));
+      });
+      ws = XLSX.utils.aoa_to_sheet(aoa);
+    } else {
+      // 매핑 양식이 없는 구분(예: 지상개폐기)은 기존 방식으로 대체
+      const rows = group.map(buildExcelRowDataFallback);
+      const headers = Object.keys(rows[0]);
+      ws = XLSX.utils.json_to_sheet(rows, {header:headers});
+    }
+    XLSX.utils.book_append_sheet(wb, ws, typeLabel.slice(0,31));
+  });
+
+  XLSX.writeFile(wb, '점검결과_전체.xlsx');
+}
+
+function buildExcelRowDataFallback(site){
+  const form = CHECKLIST_FORMS[site.typeLabel];
+  const cl = site.checklist;
+  const row = {};
+  row['순번'] = site.no;
+  row['구분'] = site.typeLabel;
+  row['선로명'] = site.lineName || '';
+  row['선로번호'] = site.lineNo || '';
+  row['전산화번호'] = site.code || '';
+  form.autoFields.forEach(([key,label])=>{ row[label] = cl.meta[key] || ''; });
+  form.manualFields.forEach(f=>{ row[f.label] = cl.meta[f.key] || ''; });
+  form.sections.forEach(sec=> sec.items.forEach(it=>{
+    const v = cl.values[it.id];
+    if(it.type==='judge'){
+      row[it.label] = v.judge || '';
+      if(it.measure) row[`${it.label}(${it.measure.label})`] = v.measureValue || '';
+    } else if(it.type==='multi'){
+      it.subs.forEach(s=>{ row[`${it.label}-${s.label}`] = v[s.key] || ''; });
+    } else {
+      row[it.label] = v.number || '';
+    }
+  }));
+  row['특이사항'] = cl.특이사항 || '';
+  row['종합판정'] = cl.종합판정 || '';
+  return row;
 }
 
 async function downloadAllChecklistPDFs(){
@@ -1981,6 +2230,25 @@ if('serviceWorker' in navigator){
     navigator.serviceWorker.register('./sw.js').catch(()=>{});
   });
 }
+
+window.addEventListener('load', async ()=>{
+  const saved = await loadSavedState();
+  if(saved && saved.length){
+    // 저장 당시엔 blob URL을 제외했으므로, file이 있는 항목은 URL을 새로 생성
+    sites = saved.map(site=>{
+      site.items = site.items.map(it=>{
+        if(it.file){ it.url = URL.createObjectURL(it.file); }
+        return it;
+      });
+      return site;
+    });
+    computePhotoFolder();
+    renderList();
+    setTopbar('순번 리스트', `${sites.length}건`, false, true);
+    showScreen('screen-list');
+  }
+});
+
 </script>
 </body>
 </html>
