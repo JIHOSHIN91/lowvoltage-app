@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>현장 점검 자료 관리</title>
+<title>저압설비 점검체크리스트</title>
 <link rel="manifest" href="./manifest.json">
 <meta name="theme-color" content="#14171b">
 <link rel="icon" href="./icon-192.png">
@@ -410,6 +410,12 @@
     flex-wrap:wrap;
     gap:8px 10px;
   }
+  .auto-bar-rest{
+    position:static;
+    padding:0;
+    margin-bottom:0;
+    border-bottom:none;
+  }
   .auto-chip{
     display:flex;flex-direction:column;gap:3px;
     flex:1 1 84px;min-width:78px;
@@ -565,14 +571,26 @@
     padding:10px 18px calc(10px + env(safe-area-inset-bottom));
     z-index:10;
   }
-  .bottom-bar-row{display:flex;flex-direction:column;gap:4px;}
-  .bottom-bar-row + .bottom-bar-row{margin-top:8px;}
-  .bottom-bar-info{font-size:11px;color:var(--text-dim);font-family:var(--mono);}
+  .bottom-bar-grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:12px;
+    max-width:420px;
+    margin:0 auto;
+  }
+  .bottom-bar-col{display:flex;flex-direction:column;align-items:center;gap:5px;}
+  .bottom-bar-info{font-size:10.5px;color:var(--text-dim);font-family:var(--mono);text-align:center;}
   .btn-compact{
     width:100%;
-    padding:8px 12px;
-    font-size:12.5px;
+    height:38px;
+    padding:0 10px;
+    font-size:11.5px;
     border-radius:8px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    line-height:1.2;
+    text-align:center;
   }
 </style>
 </head>
@@ -637,13 +655,15 @@
   </main>
 
   <div class="bottom-bar" id="bottomBar" style="display:none;">
-    <div class="bottom-bar-row">
-      <div class="bottom-bar-info" id="bottomBarInfo">0 / 0 촬영완료</div>
-      <button class="btn btn-secondary btn-compact" id="zipBtn" onclick="downloadZip()">사진 ZIP 다운로드</button>
-    </div>
-    <div class="bottom-bar-row">
-      <div class="bottom-bar-info" id="pdfBarInfo">0건 작성됨</div>
-      <button class="btn btn-secondary btn-compact" id="pdfZipBtn" onclick="downloadAllChecklistPDFs()">점검표 PDF 일괄 다운로드</button>
+    <div class="bottom-bar-grid">
+      <div class="bottom-bar-col">
+        <div class="bottom-bar-info" id="bottomBarInfo">0 / 0 촬영완료</div>
+        <button class="btn btn-secondary btn-compact" id="zipBtn" onclick="downloadZip()">사진 ZIP 다운로드</button>
+      </div>
+      <div class="bottom-bar-col">
+        <div class="bottom-bar-info" id="pdfBarInfo">0건 작성됨</div>
+        <button class="btn btn-secondary btn-compact" id="pdfZipBtn" onclick="downloadAllChecklistPDFs()">점검표 PDF 일괄 다운로드</button>
+      </div>
     </div>
   </div>
 
@@ -1253,9 +1273,11 @@ function renderChecklistForm(site, form){
   computeAutoJudges(cl, site.typeLabel);
   computeThresholdJudges(cl, form);
 
-  // 자동입력 정보 - 상단 고정(sticky) 바
+  // 자동입력 정보 - 상단 고정(sticky) 바에는 전산화번호/점검자만 (스크롤 시 화면을 덜 가리도록)
+  const stickyKeys = ['전산화번호','점검자'];
   let autoHtml = '<div class="auto-bar">';
   form.autoFields.forEach(([key,label])=>{
+    if(!stickyKeys.includes(key)) return;
     const val = cl.meta[key] || '';
     autoHtml += `
     <div class="auto-chip">
@@ -1264,6 +1286,19 @@ function renderChecklistForm(site, form){
     </div>`;
   });
   autoHtml += '</div>';
+
+  // 나머지 자동입력 항목: 예전과 같은 칩 스타일이지만 고정(sticky)되지 않는 영역
+  let autoRestHtml = '<div class="auto-bar auto-bar-rest">';
+  form.autoFields.forEach(([key,label])=>{
+    if(stickyKeys.includes(key)) return;
+    const val = cl.meta[key] || '';
+    autoRestHtml += `
+    <div class="auto-chip">
+      <span class="auto-chip-label">${label}</span>
+      <input value="${val}" oninput="updateMeta('${site.key}','${key}',this.value)">
+    </div>`;
+  });
+  autoRestHtml += '</div>';
 
   // 수기입력 항목 - 예시 선택형
   let manualHtml = '';
@@ -1397,6 +1432,10 @@ function renderChecklistForm(site, form){
 
   return `
   ${autoHtml}
+  <div class="form-block">
+    <div class="form-block-title">기본사항 (자동입력)</div>
+    ${autoRestHtml}
+  </div>
   <div class="form-block">
     <div class="form-block-title">기본사항 (직접입력)</div>
     ${manualHtml || '<div class="status-line">이 구분은 직접 입력할 기본사항이 없습니다.</div>'}

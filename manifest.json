@@ -1,7 +1,7 @@
 {
-  "name": "전력설비 점검공사 현장관리",
+  "name": "저압설비 점검공사 현장관리",
   "short_name": "점검관리",
-  "description": "전력설비 점검공사 현장 데이터 입력, 점검표 작성, 사진대장 관리 앱",
+  "description": "저압설비 점검공사 현장 데이터 입력, 점검표 작성, 사진대장 관리 앱",
   "start_url": "./inspection-app.html",
   "scope": "./",
   "display": "standalone",
